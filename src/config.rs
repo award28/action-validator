@@ -18,6 +18,37 @@ pub struct CliConfig {
     pub src: Vec<PathBuf>,
 }
 
+use std::ffi::OsString;
+
+use clap::{CommandFactory, FromArgMatches, Error};
+
+impl CliConfig {
+    fn format_error<I: CommandFactory>(err: Error) -> Error {
+        let mut cmd = I::command();
+        err.format(&mut cmd)
+    }
+
+    pub fn parse_itr<I, T>(itr: I) -> Result<Self, String>
+        where
+            I: IntoIterator<Item = T>,
+            T: Into<OsString> + Clone,
+    {
+        let arg_matches = <Self as CommandFactory>::command()
+            .try_get_matches_from_mut(itr);
+    
+        if let Err(e) = arg_matches {
+            return Err(format!("{e}"));
+        }
+        let mut matches = arg_matches.unwrap();
+        let res = <Self as FromArgMatches>::from_arg_matches_mut(&mut matches)
+            .map_err(Self::format_error::<Self>);
+        match res {
+            Ok(s) => Ok(s),
+            Err(e) => Err(format!("{e}")),
+        }
+    }
+}
+
 #[derive(Serialize, Copy, Clone, Debug)]
 pub enum ActionType {
     #[serde(rename = "action")]

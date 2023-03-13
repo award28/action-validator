@@ -15,13 +15,56 @@ use crate::schemas::{validate_as_action, validate_as_workflow};
 use glob::glob;
 use serde_json::{Map, Value};
 
+
+
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Response {
+    pub errors: Option<String>,
+    pub exit_code: i32,
+}
+
 #[cfg(feature = "js")]
 mod js {
     use crate::{
         config::{ActionType, JsConfig},
-        utils::set_panic_hook,
+        utils::set_panic_hook, CliConfig, Response,
     };
     use wasm_bindgen::prelude::*;
+
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Debug)]
+    struct Args {
+        args: Vec<String>,
+    }
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = console)]
+        fn log(s: &str); 
+
+    }
+
+    #[wasm_bindgen]
+    pub fn entrypoint(serialized: &str) -> JsValue {
+        set_panic_hook();
+
+    let deserialized = serde_json::from_str::<Args>(serialized);
+    let args = deserialized.unwrap();
+    let config_res = CliConfig::parse_itr(args.args);
+    let response = match config_res {
+        Ok(config) =>  crate::cli::run(&config),
+        Err(e) => Response {
+                errors: Some(format!("{e}")),
+                exit_code: 0,
+        },
+    };
+
+    serde_wasm_bindgen::to_value(&response).unwrap()
+    }
 
     #[wasm_bindgen(js_name = validateAction)]
     pub fn validate_action(src: &str) -> JsValue {
@@ -56,13 +99,12 @@ mod js {
     }
 }
 
-#[cfg(not(feature = "js"))]
 pub mod cli {
-    use std::fs;
+    use std::{path::PathBuf};
 
     use crate::{
         config::{ActionType, RunConfig},
-        CliConfig,
+        CliConfig, Response,
     };
 
     pub enum RunResult {
@@ -70,55 +112,77 @@ pub mod cli {
         Failure,
     }
 
-    pub fn run(config: &CliConfig) -> RunResult {
-        let mut success = true;
-
+    pub fn run(config: &CliConfig) -> Response {
         for path in &config.src {
-            let file_name = match path.file_name() {
-                Some(file_name) => file_name.to_str(),
-                None => {
-                    eprintln!("Unable to derive file name from src!");
-                    success = false;
-                    continue;
-                }
-            };
-
-            let src = &match fs::read_to_string(path) {
-                Ok(src) => src,
-                Err(err) => {
-                    eprintln!("Unable to read file: {err}");
-                    success = false;
-                    continue;
-                }
-            };
-
-            let config = RunConfig {
-                file_path: Some(path.to_str().unwrap()),
-                file_name,
-                action_type: match file_name {
-                    Some("action.yml") | Some("action.yaml") => ActionType::Action,
-                    _ => ActionType::Workflow,
-                },
-                src,
-                verbose: config.verbose,
-            };
-
-            let state = crate::run(&config);
-
-            if !state.is_valid() {
-                let fmt_state = format!("{state:#?}");
-                let path = state.file_path.unwrap_or("file".into());
-                println!("Fatal error validating {path}");
-                eprintln!("Validation failed: {fmt_state}");
-                success = false;
+            let res = run_path(config, path);
+            if res.errors.is_some() {
+                return res;
             }
         }
-
-        if success {
-            RunResult::Success
-        } else {
-            RunResult::Failure
+        Response{ 
+            errors: None,
+            exit_code: 0,
         }
+    }
+
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch)]
+        fn read_file(path: &str) -> Result<String, JsValue>; 
+    }
+
+    pub fn run_path(config: &CliConfig, path: &PathBuf) -> Response {
+        let file_name = match path.file_name() {
+            Some(file_name) => file_name.to_str(),
+            None => {
+                return Response {
+                    errors: Some(format!("Unable to derive file name from src!")),
+                    exit_code: 1,
+                };
+            }
+        };
+
+        let src = &match read_file(path.to_str().unwrap()) {
+            Ok(src) => src,
+            Err(err) => {
+                return Response {
+                    errors: Some(format!("Unable to read file: {err:#?}")),
+                    exit_code: 1,
+                };
+            }
+        };
+
+        let config = RunConfig {
+            file_path: Some(path.to_str().unwrap()),
+            file_name,
+            action_type: match file_name {
+                Some("action.yml") | Some("action.yaml") => ActionType::Action,
+                _ => ActionType::Workflow,
+            },
+            src,
+            verbose: config.verbose,
+        };
+
+        let state = crate::run(&config);
+
+        if state.is_valid() {
+            return Response {
+                errors: None,
+                exit_code: 0,
+            };
+        }
+
+        let fmt_state = format!("{state:#?}");
+        let path = state.file_path.to_owned().unwrap_or("file".into());
+        let mut errors = format!("Validation failed: {fmt_state}");
+        errors = format!("Fatal errors validation {path}\n{errors}");
+        Response {
+            errors: Some(errors),
+            exit_code: 1,
+        }
+
     }
 }
 
