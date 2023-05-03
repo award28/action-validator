@@ -39,9 +39,6 @@ jobs:
       - name: Shellcheck
         uses: ludeeus/action-shellcheck@master
 
-      - name: Run Cargo Test
-        run: cargo test
-
       - name: Setup Node
         uses: actions/setup-node@v3
         with:
@@ -116,8 +113,7 @@ jobs:
           command: build
 
       - name: Run Testsuite
-        working-directory: "test"
-        run: ./run
+        run: cargo test
 
   build-test-node:
     runs-on: ubuntu-latest
